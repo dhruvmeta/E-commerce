@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Product Store</title>
+    <!-- Tailwind CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100">
+
+    <header class="bg-indigo-600 text-white p-6 flex justify-between items-center">
+        <h1 class="text-3xl font-bold">Our Products</h1>
+        <div class="flex items-center gap-4">
+            <a href="cart.html" class="bg-white text-indigo-600 px-4 py-2 rounded hover:bg-gray-100">
+                Cart (<span id="cart-count">0</span>)
+            </a>
+            <button id="login-btn" class="bg-white text-indigo-600 px-4 py-2 rounded hover:bg-gray-100">Login</button>
+        </div>
+    </header>
+
+    <main class="max-w-6xl mx-auto p-6">
+        <div id="product-container" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+            <!-- Products will be injected here dynamically -->
+        </div>
+    </main>
+
+    <!-- Login Modal -->
+    <div id="login-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
+        <div class="bg-white p-6 rounded-lg w-96">
+            <h2 class="text-2xl font-semibold mb-4">Login</h2>
+            <input type="text" id="username" placeholder="Username" class="w-full border p-2 rounded mb-2">
+            <input type="password" id="password" placeholder="Password" class="w-full border p-2 rounded mb-4">
+            <div class="flex justify-end gap-2">
+                <button onclick="closeLogin()" class="px-4 py-2 rounded bg-gray-300 hover:bg-gray-400">Cancel</button>
+                <button onclick="login()" class="px-4 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700">Login</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const apiUrl = "http://127.0.0.1:8000/product/";
+        const cartApiUrl = "http://127.0.0.1:8000/addcart/";
+        const loginApiUrl = "http://127.0.0.1:8000/api/token/"; // JWT login endpoint
+
+        const loginBtn = document.getElementById("login-btn");
+        const loginModal = document.getElementById("login-modal");
+
+        loginBtn.addEventListener("click", () => {
+            loginModal.classList.remove("hidden");
+        });
+
+        function closeLogin() {
+            loginModal.classList.add("hidden");
+        }
+
+        async function login() {
+            const email = document.getElementById("email").value;
+            const password = document.getElementById("password").value;
+
+            try {
+                const response = await fetch(loginApiUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ email, password })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    localStorage.setItem("token", data.access); // Save JWT
+                    alert("Login successful!");
+                    closeLogin();
+                    updateCartCount();
+                    loadProducts();
+                    loginBtn.style.display = "none"; // Hide login button after login
+                } else {
+                    alert("Invalid credentials!");
+                }
+
+            } catch (error) {
+                console.error("Login error:", error);
+                alert("Login failed. Try again.");
+            }
+        }
+
+        async function loadProducts() {
+            try {
+                const token = localStorage.getItem("token");
+                const headers = token ? { "Authorization": "Bearer " + token } : {};
+
+                const response = await fetch(apiUrl, { headers });
+                const products = await response.json();
+
+                const container = document.getElementById("product-container");
+                container.innerHTML = "";
+
+                products.forEach(product => {
+                    const productCard = document.createElement("div");
+                    productCard.className = "bg-white rounded-lg shadow p-4 flex flex-col";
+
+                    productCard.innerHTML = `
+                        <img src="${product.image || 'https://via.placeholder.com/150'}" alt="${product.name}" class="h-40 w-full object-cover rounded mb-4">
+                        <h2 class="text-xl font-semibold mb-2">${product.name}</h2>
+                        <p class="text-gray-700 mb-2">₹${product.price}</p>
+                        <div class="mt-auto flex gap-2">
+                            <button onclick="buyProduct('${product.id}')" class="flex-1 bg-indigo-600 text-white py-2 px-4 rounded hover:bg-indigo-700">Buy</button>
+                            <button onclick="addToCart('${product.id}')" class="flex-1 bg-green-600 text-white py-2 px-4 rounded hover:bg-green-700">Add to Cart</button>
+                        </div>
+                    `;
+                    container.appendChild(productCard);
+                });
+
+            } catch (error) {
+                console.error("Error fetching products:", error);
+                alert("Failed to load products.");
+            }
+        }
+
+        function buyProduct(productId) {
+            alert(`Buying product ID: ${productId}`);
+        }
+
+        async function addToCart(id) {
+            const token = localStorage.getItem("token");
+            if (!token) {
+                alert("You must log in first!");
+                return;
+            }
+
+            try {
+                const response = await fetch(cartApiUrl, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": "Bearer " + token
+                    },
+                    body: JSON.stringify({ product_id: id, quantity: 1 })
+                });
+
+                const data = await response.json();
+                alert("Product added to cart!");
+                console.log(data);
+                updateCartCount();
+            } catch (error) {
+                console.error("Error adding to cart:", error);
+                alert("Failed to add product to cart.");
+            }
+        }
+
+        async function updateCartCount() {
+            const token = localStorage.getItem("token");
+            if (!token) return;
+
+            try {
+                const response = await fetch("http://127.0.0.1:8000/cart/", {
+                    headers: { "Authorization": "Bearer " + token }
+                });
+                const items = await response.json();
+                document.getElementById("cart-count").innerText = items.length;
+            } catch (error) {
+                console.error("Error fetching cart count:", error);
+            }
+        }
+
+        window.onload = () => {
+            loadProducts();
+            updateCartCount();
+
+            // Hide login button if already logged in
+            if (localStorage.getItem("token")) loginBtn.style.display = "none";
+        }
+    </script>
+
+</body>
+</html>
