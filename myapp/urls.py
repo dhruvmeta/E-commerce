@@ -29,6 +29,16 @@ urlpatterns = [
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('logoutview/', UserLoginStatsView.as_view(), name='logout'),
     path('loginview/',views.loginview,name='loginview'),
+    path("purchases/", UserPurchaseHistory.as_view(), name="user-purchases"),
+    path("sales/", SellerSalesReport.as_view(), name="sales-summary"),
+    path("sales-day/", SellerDailySalesReport.as_view(), name="sales-day"),
+    # Admin analytics
+    path("total-sales/", AdminTotalSalesView.as_view(), name="admin-total"),
+    path("TopProduct/",AdminTopProductsView.as_view()),
+    path("MothlySales/",AdminMonthlySalesView.as_view()),
+    path("top-products-monthly/", AdminTopProductsMonthlyView.as_view(), name="admin-top-products-monthly"),
+    path("admin-products-sellers/", AdminProductSellerDetailView.as_view(), name="admin-products-sellers"),
+
 ]
 
 if settings.DEBUG:

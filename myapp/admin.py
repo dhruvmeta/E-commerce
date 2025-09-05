@@ -23,8 +23,12 @@ class cartItemAdmin(admin.ModelAdmin):
         fields=['user','product','quantity']
 admin.site.register(cartItem,cartItemAdmin)
 
+class PurchaseProductAdmin(admin.ModelAdmin):
+        model = PurchaseProduct
+        list_display = ['id', 'user', 'product','quantity','created_at','updated_at'] 
+        fields=['user','product','quantity']
+admin.site.register(PurchaseProduct,PurchaseProductAdmin)
 
-admin.site.register(PurchaseProduct)
 
 
 class PaymentAdmin(admin.ModelAdmin):

@@ -19,6 +19,8 @@ from .models import Notification
 from django.core.mail import send_mail
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
+from django.db.models.functions import TruncMonth,TruncDay
+from django.db.models import Count,Sum, F
 # razorpay 
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
@@ -31,7 +33,13 @@ from rest_framework.response import Response
 import hmac
 import hashlib
 import json
+# import all redis setting
+from django.core.cache.backends.base import DEFAULT_TIMEOUT
+from django.core.cache import cache
+from django.views.decorators.cache import cache_page
 
+
+CACHE_TTL = getattr(settings, 'CACHE_TTL', DEFAULT_TIMEOUT)
 
 # notification
 def create_notification(user, message):
@@ -97,7 +105,7 @@ class LoginView(APIView):
             raise AuthenticationFailed('User not found')
         serializer = UserSerializer(user)
 
-        return Response({'token': get_tokens_for_user(user), 'data':serializer.data}, status=status.HTTP_200_OK)
+        return Response({'token': get_tokens_for_user(user), 'data':serializer.data,"message": f"Welcome {user.name}, you have logged in successfully!"}, status=status.HTTP_200_OK)
     
 
 class LogoutView(APIView):
@@ -135,11 +143,27 @@ class ProfileView(APIView):
         user.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
     
+
 class ProductView(APIView):
+
     def get(self, request):
+        cache_key = 'all_products'  # Unique key for this cache
+
+        # Try to get data from cache
+        products = cache.get(cache_key)
+        if products is not None:
+            # If cache exists, return cached data
+            return Response(products, status=status.HTTP_200_OK)
+
+        # If cache does not exist, fetch from DB
         products = Product.objects.all()
         serializer = ProductSerializer(products, many=True)
+
+        # Store serialized data in cache
+        cache.set(cache_key, serializer.data, timeout=CACHE_TTL)
+
         return Response(serializer.data, status=status.HTTP_200_OK)
+
     
 class CartView(APIView):
     permission_classes = [IsAuthenticated]
@@ -182,11 +206,15 @@ class AddProductView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-       
         if not request.user.is_seller:
             return Response({"error": "Only sellers can add products."}, status=status.HTTP_403_FORBIDDEN)
 
-        serializer = ProductSerializer(data=request.data)
+        # Accept stock from request data, default to 0 if not provided
+        stock = request.data.get("stock", 0)
+        product_data = request.data.copy()
+        product_data["stock"] = stock
+
+        serializer = ProductSerializer(data=product_data)
         if serializer.is_valid():
             serializer.save(user=request.user)  # attach seller
             return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -205,16 +233,29 @@ class AddProductView(APIView):
             return Response({"error": "Only sellers can do this."}, status=status.HTTP_403_FORBIDDEN)
         product = Product.objects.get(pk=pk,user=request.user)
         product.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response({"message": "Product deleted successfully!"},status=status.HTTP_204_NO_CONTENT)
     
-    def put (self, request, pk):
+    def patch (self, request, pk):
         if not request.user.is_seller:
             return Response({"error": "Only sellers can add products."}, status=status.HTTP_403_FORBIDDEN)
-        product = Product.objects.get(pk=pk,user=request.user)
-        serializer = ProductSerializer(product, data=request.data)
+        product = Product.objects.get(pk=pk, user=request.user)
+        data = request.data.copy()
+        if "stock" in data:
+            try:
+                add_stock = int(data["stock"])
+                product.stock += add_stock
+                product.save()
+                # Remove 'stock' from data so serializer doesn't overwrite it
+                data.pop("stock")
+            except ValueError:
+                return Response({"error": "Stock must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = ProductSerializer(product, data=data, partial=True)
         if serializer.is_valid():
             serializer.save()
-            return Response(serializer.data, status=status.HTTP_200_OK)
+            return Response(
+                {"message": "Product updated successfully!", "data": serializer.data},
+                status=status.HTTP_200_OK
+            )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
 
@@ -224,6 +265,8 @@ class NotificationListView(APIView):
     def get(self, request):
         notifications = Notification.objects.filter(user=request.user).order_by('-created_at')
         serializer = NotificationSerializer(notifications, many=True)
+        #delete notifications after viewing
+        notifications.delete()
         return Response(serializer.data)
 
 client = razorpay.Client(auth=(settings.RAZORPAY_KEY_ID, settings.RAZORPAY_KEY_SECRET))
@@ -282,6 +325,7 @@ class CreatePaymentLink(APIView):
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)  
 
+
 @csrf_exempt
 def razorpay_webhook(request):
     webhook_secret = 'test@123'
@@ -315,6 +359,18 @@ def razorpay_webhook(request):
                 payment.razorpay_signature = received_signature   # store signature
                 payment.paid = True
                 payment.save()
+
+                # REDUCE STOCK HERE
+                product = payment.product
+                if product.stock > 0:
+                    product.stock -= 1
+                    product.save()
+                    print(f"Stock after purchase: {product.stock}")
+                    # Notify seller if stock is low
+                    if product.stock <= 5:
+                        create_notification(product.user, f"Low stock alert: {product.name} has only {product.stock} left.")
+                else:
+                    print("Product out of stock!")
 
                 #  aggregate purchases instead of creating new rows
                 purchase, created = PurchaseProduct.objects.get_or_create(
@@ -350,6 +406,18 @@ def razorpay_webhook(request):
             payment.razorpay_signature = received_signature   #  store signature
             payment.paid = True
             payment.save()
+
+            # REDUCE STOCK HERE
+            product = payment.product
+            if product.stock > 0:
+                product.stock -= 1
+                product.save()
+                print(f"Stock after purchase: {product.stock}")
+                # Notify seller if stock is low
+                if product.stock <= 5:
+                    create_notification(product.user, f"Low stock alert: {product.name} has only {product.stock} left.")
+            else:
+                print("Product out of stock!")
 
             #  aggregate purchases instead of creating new rows
             purchase, created = PurchaseProduct.objects.get_or_create(
@@ -420,3 +488,174 @@ class UserLoginStatsView(APIView):
             "logged_in_users": logged_in_count,
             "logged_out_users": logged_out_count
         })
+
+# month wise purchase  history view 
+
+class UserPurchaseHistory(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        purchases = (
+            PurchaseProduct.objects.filter(user=user)
+            .annotate(month=TruncMonth("created_at"))
+            .values("month")
+            .annotate(
+                total_orders=Count("id"),
+                total_spent=Sum(F("product__price") * F("quantity"))
+            )
+            .order_by("month")
+        )
+
+        return Response({
+            "user": user.name,
+            "purchase_history": list(purchases),
+        })
+
+class SellerSalesReport(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        seller = request.user
+
+        # Check if the logged-in user is a seller
+        if not seller.is_seller:  # 👈 your custom seller field
+            return Response({"error": "You are not a seller"}, status=403)
+
+        # Get all sales where this seller is the owner of product
+        sales = (
+            PurchaseProduct.objects.filter(product__user=seller)
+            .annotate(month=TruncMonth("created_at"))
+            .values("month")
+            .annotate(
+                total_products_sold=Sum("quantity"),
+                total_earnings=Sum(F("product__price") * F("quantity"))
+            )
+            .order_by("month")
+        )
+
+        return Response({
+            "seller": seller.name,
+            "sales_report": list(sales),
+        })
+    
+class SellerDailySalesReport(APIView):
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        seller = request.user
+
+        #  check if logged-in user is seller
+        if not seller.is_seller:
+            return Response({"error": "You are not a seller"}, status=403)
+
+        # get all sales for this seller grouped by day
+        sales = (
+            PurchaseProduct.objects.filter(product__user=seller)
+            .annotate(day=TruncDay("created_at"))
+            .values("day")
+            .annotate(
+                total_products_sold=Sum("quantity"),
+                total_earnings=Sum(F("product__price") * F("quantity")),
+            )
+            .order_by("day")
+        )
+
+        return Response({
+            "seller": seller.name,
+            "daily_sales_report": list(sales),
+        })
+    
+class AdminTotalSalesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # You can add admin check here if needed
+        total_sales = PurchaseProduct.objects.aggregate(
+            total_amount=Sum(F("product__price") * F("quantity")),
+            total_products_sold=Sum("quantity")
+        )
+        return Response(total_sales, status=status.HTTP_200_OK)
+
+class AdminTopProductsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        top_products = (
+            PurchaseProduct.objects
+            .values("product__id", "product__name")
+            .annotate(total_sold=Sum("quantity"))
+            .order_by("-total_sold")[:5]
+        )
+        return Response({"top_products": list(top_products)}, status=status.HTTP_200_OK)
+
+class AdminMonthlySalesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        monthly_sales = (
+            PurchaseProduct.objects
+            .annotate(month=TruncMonth("created_at"))
+            .values("month")
+            .annotate(
+                total_amount=Sum(F("product__price") * F("quantity")),
+                total_products_sold=Sum("quantity")
+            )
+            .order_by("month")
+        )
+        return Response({"monthly_sales": list(monthly_sales)}, status=status.HTTP_200_OK)
+
+class AdminTopProductsMonthlyView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # Group by month and product, sum quantity
+        sales = (
+            PurchaseProduct.objects
+            .annotate(month=TruncMonth("created_at"))
+            .values("month", "product__id", "product__name")
+            .annotate(total_sold=Sum("quantity"))
+            .order_by("month", "-total_sold")
+        )
+
+        # Organize results: {month: [top products]}
+        from collections import defaultdict
+        result = defaultdict(list)
+        for entry in sales:
+            month = entry["month"].strftime("%Y-%m") if entry["month"] else "Unknown"
+            result[month].append({
+                "product_id": entry["product__id"],
+                "product_name": entry["product__name"],
+                "total_sold": entry["total_sold"]
+            })
+
+        # Optionally, keep only top N products per month (e.g., top 5)
+        top_n = 5
+        final = {month: products[:top_n] for month, products in result.items()}
+
+        return Response({"top_products_monthly": final}, status=status.HTTP_200_OK)
+
+class AdminProductSellerDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # Optionally, check if user is admin
+        products = Product.objects.select_related("user", "category").all()
+        data = []
+        for p in products:
+            data.append({
+                "product_id": p.id,
+                "product_name": p.name,
+                "description": p.description,
+                "category": p.category.name if p.category else None,
+                "price": float(p.price),
+                "stock": p.stock,
+                "image": p.image.url if p.image else None,
+                "created_at": p.created_at,
+                "updated_at": p.updated_at,
+                "seller_id": p.user.id if p.user else None,
+                "seller_name": p.user.name if p.user else None,
+                "seller_email": p.user.email if p.user else None,
+            })
+        return Response({"products": data}, status=status.HTTP_200_OK)
