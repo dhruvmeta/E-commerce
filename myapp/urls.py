@@ -38,6 +38,7 @@ urlpatterns = [
     path("MothlySales/",AdminMonthlySalesView.as_view()),
     path("top-products-monthly/", AdminTopProductsMonthlyView.as_view(), name="admin-top-products-monthly"),
     path("admin-products-sellers/", AdminProductSellerDetailView.as_view(), name="admin-products-sellers"),
+    path("search-products/", ProductSearchView.as_view(), name="search-products"),
 
 ]
 

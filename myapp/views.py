@@ -659,3 +659,27 @@ class AdminProductSellerDetailView(APIView):
                 "seller_email": p.user.email if p.user else None,
             })
         return Response({"products": data}, status=status.HTTP_200_OK)
+
+from django.db.models import Q
+
+class ProductSearchView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        query = request.GET.get("q", "")
+        if not query:
+            return Response({"error": "No search query provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Split query into words
+        words = query.strip().split()
+        # Build Q object for partial matches (case-insensitive)
+        q_obj = Q()
+        for word in words:
+            q_obj |= Q(name__icontains=word)
+        # Also match full query
+        q_obj |= Q(name__icontains=query)
+
+        products = Product.objects.filter(q_obj).distinct()
+        serializer = ProductSerializer(products, many=True)
+        return Response({"results": serializer.data}, status=status.HTTP_200_OK)
+    
